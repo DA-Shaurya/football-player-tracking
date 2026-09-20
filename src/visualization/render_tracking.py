@@ -40,15 +40,30 @@ def render_annotated_video(
 
     # 1. Load Tracking CSV
     df = pd.read_csv(csv_path)
+    has_teams = "team_id" in df.columns
+    has_speed = "speed_kmh" in df.columns
+
+    team_palette = {
+        0: (35, 35, 230),     # Team 0: Red (BGR)
+        1: (240, 200, 70),    # Team 1: Cyan / Sky-Blue (BGR)
+        2: (30, 235, 245),    # Referee / GK: Yellow (BGR)
+    }
+
     frames_dict = defaultdict(list)
     for _, row in df.iterrows():
+        tid = int(row["track_id"])
+        team_id = int(row["team_id"]) if has_teams and not pd.isna(row["team_id"]) else None
+        speed = float(row["speed_kmh"]) if has_speed and not pd.isna(row["speed_kmh"]) else 0.0
+
         frames_dict[int(row["frame"])].append({
-            "id": int(row["track_id"]),
+            "id": tid,
             "conf": float(row["confidence"]),
             "x1": int(round(row["x1"])),
             "y1": int(round(row["y1"])),
             "x2": int(round(row["x2"])),
-            "y2": int(round(row["y2"]))
+            "y2": int(round(row["y2"])),
+            "team_id": team_id,
+            "speed_kmh": speed,
         })
 
     # 2. Open Video Capture & Writer
@@ -79,11 +94,14 @@ def render_annotated_video(
 
         detections = frames_dict.get(frame_idx, [])
         active_ids = set()
+        team_counts = defaultdict(int)
 
         # Update trajectory points
         for det in detections:
             tid = det["id"]
             active_ids.add(tid)
+            if det["team_id"] is not None:
+                team_counts[det["team_id"]] += 1
             feet_x = int((det["x1"] + det["x2"]) / 2)
             feet_y = det["y2"]
             trajectories[tid].append((feet_x, feet_y))
@@ -96,31 +114,49 @@ def render_annotated_video(
                     del trajectories[tid]
                     continue
 
-            color = get_color(tid)
+            # Determine color
+            matching_det = next((d for d in detections if d["id"] == tid), None)
+            if matching_det and matching_det["team_id"] is not None:
+                color = team_palette.get(matching_det["team_id"], get_color(tid))
+            else:
+                color = get_color(tid)
+
             pts_list = list(points)
             for i in range(1, len(pts_list)):
                 alpha = i / len(pts_list)
                 thickness = max(1, int(round(1 + 2 * alpha)))
-                cv2.line(frame, pts_list[i - 1], pts_list[i], color, thickness)
+                cv2.line(frame, pts_list[i - 1], pts_list[i], color, thickness, lineType=cv2.LINE_AA)
 
         # Draw bounding boxes, anchor circles, and labels
         for det in detections:
             tid = det["id"]
             x1, y1, x2, y2 = det["x1"], det["y1"], det["x2"], det["y2"]
             conf = det["conf"]
-            color = get_color(tid)
+            team_id = det["team_id"]
+            speed_kmh = det["speed_kmh"]
+
+            # Color selection: Team color if available, else track hash color
+            if team_id is not None:
+                color = team_palette.get(team_id, get_color(tid))
+            else:
+                color = get_color(tid)
 
             # Bounding box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2, lineType=cv2.LINE_AA)
 
             # Foot ground contact point
             feet_x = int((x1 + x2) / 2)
-            cv2.circle(frame, (feet_x, y2), 3, color, -1)
+            cv2.circle(frame, (feet_x, y2), 4, color, -1, lineType=cv2.LINE_AA)
+            cv2.circle(frame, (feet_x, y2), 5, (255, 255, 255), 1, lineType=cv2.LINE_AA)
 
-            # Label badge (#id)
-            label = f"#{tid}"
-            (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-            label_y1 = max(0, y1 - th - 6)
+            # Label badge (#id | speed)
+            if speed_kmh > 0:
+                label = f"#{tid} | {speed_kmh:.1f} km/h"
+            else:
+                label = f"#{tid}"
+
+            (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+            label_y1 = max(0, y1 - th - 7)
             label_y2 = y1
             label_x2 = x1 + tw + 8
 
@@ -130,18 +166,18 @@ def render_annotated_video(
                 label,
                 (x1 + 4, y1 - 4),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
+                0.45,
                 (255, 255, 255),
                 1,
                 cv2.LINE_AA
             )
 
         # Modern HUD Dashboard Overlay (Top-Left)
-        hud_w = 400
-        hud_h = 90
+        hud_w = 440
+        hud_h = 96 if has_teams else 85
         sub_img = frame[10:10+hud_h, 10:10+hud_w]
         black_rect = np.zeros(sub_img.shape, dtype=np.uint8)
-        res = cv2.addWeighted(sub_img, 0.30, black_rect, 0.70, 1.0)
+        res = cv2.addWeighted(sub_img, 0.25, black_rect, 0.75, 1.0)
         frame[10:10+hud_h, 10:10+hud_w] = res
         cv2.rectangle(frame, (10, 10), (10+hud_w, 10+hud_h), (255, 255, 255), 1)
 
@@ -152,11 +188,22 @@ def render_annotated_video(
 
         line1 = f"{match_title}"
         line2 = f"Time: {int(sec//60):02d}:{sec%60:04.1f} / {int(tot_sec//60):02d}:{tot_sec%60:04.1f}  (Frame {frame_idx}/{total_frames})"
-        line3 = f"Active Players: {len(detections):<3} | FPS: {curr_fps:.1f} | Tracker: BoT-SORT"
+        
+        if has_teams and len(team_counts) > 0:
+            c0 = team_counts.get(0, 0)
+            c1 = team_counts.get(1, 0)
+            c2 = team_counts.get(2, 0)
+            line3 = f"Active: {len(detections)}  [Team A: {c0} | Team B: {c1} | Ref: {c2}]"
+        else:
+            line3 = f"Active Players: {len(detections):<3} | FPS: {curr_fps:.1f} | Tracker: BoT-SORT"
 
         cv2.putText(frame, line1, (18, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, line2, (18, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (220, 220, 220), 1, cv2.LINE_AA)
-        cv2.putText(frame, line3, (18, 78), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (100, 255, 100), 1, cv2.LINE_AA)
+        cv2.putText(frame, line2, (18, 54), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (220, 220, 220), 1, cv2.LINE_AA)
+        cv2.putText(frame, line3, (18, 76), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (100, 255, 100), 1, cv2.LINE_AA)
+
+        if has_teams:
+            line4 = f"FPS: {curr_fps:.1f} | Model: YOLOv8s + BoT-SORT (ORB GMC)"
+            cv2.putText(frame, line4, (18, 94), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1, cv2.LINE_AA)
 
         out.write(frame)
 
