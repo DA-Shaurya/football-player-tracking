@@ -1,4 +1,4 @@
-﻿# Byte-compiled / optimized / DLL files
+# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *.class
@@ -36,3 +36,11 @@ outputs/videos/
 .idea/
 .DS_Store
 Thumbs.db
+
+temp/
+runs/
+outputs/evaluation/**/*.zip
+outputs/evaluation/**/build*/
+outputs/evaluation/**/temp_*/
+outputs/evaluation/**/zip_build/
+outputs/evaluation/**/tracker_zip/
