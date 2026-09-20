@@ -57,7 +57,7 @@ The pipeline uses **BoT-SORT** with dedicated football optimizations:
 ## 5. Evaluation Harness
 
 All models are evaluated using the official SoccerNet MOT TrackEval harness ([`src/evaluation/run_trackeval.py`](src/evaluation/run_trackeval.py)) measuring:
-- **$\text{HOTA}$** (*Higher Order Tracking Accuracy*): Balanced geometric mean of detection and association ($\sqrt{\text{DetA} \cdot \text{AssA}}$).
+- **$\text{HOTA}$** (*Higher Order Tracking Accuracy*): Conventionally related to the geometric mean of detection and association accuracy ($\text{HOTA} \approx \sqrt{\text{DetA} \times \text{AssA}}$).
 - **$\text{AssA}$** (*Association Accuracy*): Temporal alignment of player trajectories.
 - **$\text{DetA}$** (*Detection Accuracy*): Spatial alignment of bounding boxes.
 - **$\text{IDF1}$**: Identity F1 score measuring global trajectory consistency.

@@ -2,9 +2,9 @@
 
 A critical analytical finding in this pipeline is the decoupling of **detection performance** from **temporal association performance**.
 
-In modern multi-object tracking (MOT), overall tracking performance as measured by **HOTA** (*Higher Order Tracking Accuracy*) is formulated as the geometric mean of detection accuracy ($\text{DetA}$) and association accuracy ($\text{AssA}$):
+In modern multi-object tracking (MOT), overall tracking performance as measured by **HOTA** (*Higher Order Tracking Accuracy*) is conventionally related to the geometric mean of detection accuracy ($\text{DetA}$) and association accuracy ($\text{AssA}$):
 
-$$\text{HOTA} = \sqrt{\text{DetA} \cdot \text{AssA}}$$
+$$ \text{HOTA} \approx \sqrt{\text{DetA} \times \text{AssA}} $$
 
 ---
 
@@ -58,7 +58,7 @@ From our official frozen benchmark evaluation:
 | | **Association Precision ($\text{AssPr}$)** | **78.448%** | When matched, track associations are largely correct |
 | | **Association Recall ($\text{AssRe}$)** | **55.825%** | Primary bottleneck: tracks fragment during prolonged occlusions |
 | | **Identity Switches ($\text{IDSW}$)** | **693** | Total identity swaps across 9,000 frames |
-| **Composite Metric** | **HOTA** | **60.618** | Constrained primarily by AssA ($\sqrt{70.489 \times 52.204} \approx 60.66$) |
+| **Composite Metric** | **HOTA** | **60.618** | Conventionally related to the geometric mean of DetA and AssA ($\text{HOTA} \approx \sqrt{\text{DetA} \times \text{AssA}}$) |
 
 ---
 
@@ -77,5 +77,5 @@ From our official frozen benchmark evaluation:
    - Without GMC (Global Motion Compensation), Kalman filters fail. ORB GMC lifts AssA from **47.11** (without GMC) to **51.39** (+4.28 AssA points).
 
 4. **Summary**:
-   - **Detection is mature**: Fine-tuned YOLOv8s delivers $> 90\%$ recall and $> 96\%$ precision on football players.
-   - **Association is the frontier**: Improving HOTA from $60.6$ towards $70+$ requires jersey-number recognition, team-differentiated clustering, or topological graph matching rather than larger object detectors.
+   - Detection is currently less limiting than association on the evaluated SoccerNet benchmark. YOLOv8s achieves $\text{DetA} = 70.49$ while $\text{AssA} = 52.20$, indicating that association errors account for a larger share of the current HOTA limitation.
+   - Potential future directions include jersey-number recognition and topology/formation-aware association.
