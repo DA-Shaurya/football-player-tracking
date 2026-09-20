@@ -1,222 +1,298 @@
-# Football Player Tracking & Performance Analytics Pipeline
+# ⚽ Football Player Tracking & Tactical Performance Analytics Pipeline
 
-An end-to-end computer vision pipeline for real-time football player detection, multi-object tracking (MOT), camera motion compensation, and trajectory analytics fine-tuned on the **SoccerNet Tracking-2023** dataset.
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch CUDA](https://img.shields.io/badge/PyTorch-CUDA%20Accelerated-EE4C2C.svg?logo=pytorch)](https://pytorch.org/)
+[![YOLOv8s](https://img.shields.io/badge/YOLOv8-Fine--Tuned-00FFFF.svg)](https://github.com/ultralytics/ultralytics)
+[![BoT-SORT](https://img.shields.io/badge/Tracker-BoT--SORT%20(ORB%20GMC)-brightgreen.svg)](https://github.com/NirAharon/BoT-SORT)
+[![Benchmark](https://img.shields.io/badge/SoccerNet-Tracking--2023-orange.svg)](https://www.soccer-net.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+An end-to-end computer vision and sports analytics pipeline for **association football broadcast footage**, fine-tuned and validated on the official **SoccerNet Tracking-2023** benchmark. 
+
+The pipeline bridges raw pixel detections with tactical football intelligence: multi-object tracking (MOT), global motion compensation (GMC), unsupervised team classification, camera-calibrated kinematics, collective team shapes, and pitch occupancy heatmaps.
+
+---
+
+## 📸 Visual Showcase
+
+<div align="center">
+  <img src="assets/tracking_box_demo.png" alt="Broadcast Player Tracking with Team Colors & Speeds" width="100%">
+  <p><em>Figure 1: Clean broadcast view with team-colored bounding boxes (Red: Liverpool, Sky-Blue: Opposition, Yellow: Ref/GK), smooth motion trails, real-time speed badges, and live match HUD.</em></p>
+</div>
+
+---
+
+## 🏗️ System Architecture
 
 ```
-Raw Video Stream ──────► [Fine-Tuned YOLOv8s] ──────► [BoT-SORT + ORB GMC] ──────► [TrackEval / Analytics]
-(1080p / 720p)             Detector (conf=0.35)        match=0.85, buffer=30         HOTA: 60.62 | IDF1: 70.62
+                                  BROADCAST MATCH VIDEO
+                                     (1080p / 720p)
+                                            │
+                                            ▼
+                           ┌─────────────────────────────────┐
+                           │   1. DETECTION MODULE (YOLOv8s) │
+                           │   • 20 Epochs on SoccerNet-2023 │
+                           │   • imgsz=640 | conf=0.35       │
+                           │   • DetA: 70.49 | MOTA: 86.83   │
+                           └────────────────┬────────────────┘
+                                            │ Detections [x1, y1, x2, y2, conf]
+                                            ▼
+                           ┌─────────────────────────────────┐
+                           │   2. TRACKING & GMC (BoT-SORT)  │
+                           │   • ORB Global Motion Comp.     │
+                           │   • Kalman State Estimation     │
+                           │   • match_thresh=0.85, buffer=30│
+                           │   • HOTA: 60.62 | IDF1: 70.62   │
+                           └────────────────┬────────────────┘
+                                            │ Persistent Tracklets
+                                            ▼
+             ┌──────────────────────────────┴──────────────────────────────┐
+             │                                                             │
+             ▼                                                             ▼
+┌─────────────────────────────┐                               ┌─────────────────────────────┐
+│ 3. PITCH MAPPING & GMC      │                               │ 4. TEAM CLASSIFICATION      │
+│ • Dynamic Homography Matrix │                               │ • Torso Jersey Patch Crop   │
+│   H_t = H_ref · M_{t->ref}  │                               │ • HSV Pitch Grass Masking   │
+│ • Metric Pitch: 105m × 68m  │                               │ • CIELAB Color Clustering   │
+│ • Camera Pan Subtraction    │                               │ • Temporal Majority Voting  │
+│   (Prevents Speed Bleed)    │                               │ • 85.7% Acc on SNMOT-113    │
+└────────────┬────────────────┘                               └──────────────┬──────────────┘
+             │ Metric (X, Y) Coordinates                                     │ Team IDs [0, 1, 2]
+             └──────────────────────────────┬────────────────────────────────┘
+                                            │
+                                            ▼
+                           ┌─────────────────────────────────┐
+                           │ 5. FOOTBALL TACTICAL ANALYTICS  │
+                           ├─────────────────────────────────┤
+                           │ • Kinematics: Distance, Speed   │
+                           │   (km/h), Sprint Intensity Zones│
+                           │ • Team Shape: Centroid, Width,  │
+                           │   Length, Convex Hull (m^2)     │
+                           │ • Formation Estimation (4-3-3)  │
+                           │ • 2D Gaussian Pitch Heatmaps    │
+                           └────────────────┬────────────────┘
+                                            │
+                                            ▼
+                         ACTIONABLE DELIVERABLES & REPORTS
+       ┌────────────────────────────┼────────────────────────────┐
+       ▼                            ▼                            ▼
+Full Broadcast Video        Match Analytics JSON         Tactical Heatmaps
+(Clean Overlay @ 120 FPS)   (Executive Summary)       (Occupancy & Dominance)
 ```
 
 ---
 
-## 1. Problem Statement
+## 🌟 Core Innovations & Technical Highlights
 
-Multi-object tracking in association football broadcast footage presents unique computer vision challenges:
-- **Teammate Visual Homogeneity**: Players on the same team share identical jerseys, shorts, and socks, confusing standard appearance-based Re-Identification (ReID) models.
-- **Dynamic Camera Motion**: Continuous high-speed panning, tilting, and zooming induces rapid apparent player displacements that break standard linear motion assumptions.
-- **Dense Crowd Occlusions**: Corners, free kicks, and penalty box scrums cause frequent multi-player bounding box overlaps ($\text{IoU} > 0.20$ in $> 45\%$ of active footage).
-- **Broadcast Shot Transitions**: Frequent camera cuts, slow-motion replays, and touchline close-ups disrupt 2D coordinate spaces, risking false identity bleeding across scenes.
+### 1. ORB Global Motion Compensation (GMC) & True Velocity Calibration
+In sports broadcasting, the camera constantly pans and tilts across the field. Standard planar homographies mistake camera panning motion ($8\text{--}15\text{ px/frame}$) for physical player movement, artificially inflating speeds to $40+\text{ km/h}$ even for players standing still.
+- We integrate **ORB Global Motion Compensation (GMC)** to estimate the camera's inter-frame affine matrix $\mathbf{M}_{t \to \text{ref}}$ from pitch background features.
+- Dynamic homography composition:
+  $$\mathbf{H}_t = \mathbf{H}_{\text{ref}} \cdot \mathbf{M}_{t \to \text{ref}}$$
+- Coupled with a centered 11-frame low-pass filter, this subtracts camera panning vectors, recovering true biological human movements ($2\text{--}7\text{ km/h}$ walking, $14\text{--}22\text{ km/h}$ running).
 
-This pipeline systematically addresses each failure mode through detector fine-tuning, camera motion compensation (GMC), spatial association tuning, and camera-cut hygiene.
+### 2. Unsupervised Team Classification & Temporal Majority Voting
+- **Jersey Torso Extraction**: Crops player upper torso ($y \in [y_1 + 0.15h, y_1 + 0.50h]$, $x \in [x_1 + 0.18w, x_2 - 0.18w]$) to avoid pitch borders and shorts.
+- **Grass Masking**: Inverts HSV green thresholding ($H \in [30, 88]$) to exclude background pitch bleed around arms.
+- **CIELAB Clustering**: Perceptually uniform color clustering separating Team A, Team B, and Referees/Goalkeepers.
+- **Identity Locking**: Applies temporal majority voting per `track_id` across the video, preventing single-frame lighting flicker.
+- **Benchmark**: Achieved **85.71% accuracy** against official ground-truth team labels on SoccerNet `SNMOT-113`.
 
----
+### 3. Spatial Pitch Occupancy & Territorial Dominance Maps
+Discretizes the standard FIFA $105\text{m} \times 68\text{m}$ pitch into $1\text{m}^2$ bins and evaluates 2D Gaussian Kernel Density Estimation (KDE):
+- **Team Presence**: Independent spatial control density for each team.
+- **Dominance Map**: Evaluates the differential control $\Delta(x, y) = \text{Norm}(\text{Density}_A) - \text{Norm}(\text{Density}_B)$, exposing dominant attacking channels vs. contested zones.
 
-## 2. Dataset
-
-The pipeline is trained and validated on the official **SoccerNet Tracking-2023** benchmark:
-- **Sequences**: Broadcast match footage recorded at 25–30 FPS in 1080p and 720p.
-- **Annotations**: MOT-format bounding boxes for players, referees, and goalkeepers.
-- **Benchmark Split**: Evaluated across **12 validation sequences (9,000 frames)** containing over 148,000 ground-truth player instances.
-
----
-
-## 3. Detection Architecture
-
-- **Base Architecture**: YOLOv8s (*Small*)
-- **Training Protocol**: 20 epochs, image size 640×640, batch size 2, PyTorch CUDA on NVIDIA RTX GPU.
-- **Inference Confidence**: Optimized to `conf = 0.35` (empirically found to maximize association accuracy by filtering out low-confidence false positives while preserving 90.2% recall).
-- **Detection Quality**:
-  - **$\text{DetA}$**: `70.489`
-  - **CLEAR Precision ($\text{CLR\_Pr}$)**: `96.812%`
-  - **CLEAR Recall ($\text{CLR\_Re}$)**: `90.225%`
-  - **$\text{MOTA}$**: `86.829`
-
----
-
-## 4. Tracking Architecture
-
-The pipeline uses **BoT-SORT** with dedicated football optimizations:
-1. **Global Motion Compensation (GMC)**: Employs **ORB feature matching** to compute pitch homographies between successive frames, decoupling camera panning velocity from player sprint velocity.
-2. **Kalman Filter State Estimation**: 8-dimensional state vector $[x, y, a, h, \dot{x}, \dot{y}, \dot{a}, \dot{h}]$ updated with camera motion compensation.
-3. **Spatial Distance Gating**: High-tolerance spatial matching (`match_thresh = 0.85`), allowing the Kalman filter to bridge temporary occlusions and abrupt directional changes.
-4. **Memory Buffer**: `track_buffer = 30 frames` ($\approx 1.0\text{–}1.2\text{s}$), allowing tracks to survive brief occlusions without retaining stale tracks across scene cuts.
-5. **ReID Strategy**: Appearance ReID is explicitly disabled (`with_reid: False`). Because teammates wear identical kits, standard visual embeddings map distinct players to near-zero cosine distance, increasing identity swaps. Pure spatial-motion matching with ORB GMC delivers significantly higher association accuracy.
+<div align="center">
+  <table width="100%">
+    <tr>
+      <td width="50%" align="center">
+        <img src="assets/dominance_map.png" alt="Territorial Dominance Map" width="100%"/>
+        <br/><b>Territorial Dominance Map</b> (Red: Team A | Blue: Team B)
+      </td>
+      <td width="50%" align="center">
+        <img src="assets/team_a_heatmap.png" alt="Team A Pitch Occupancy" width="100%"/>
+        <br/><b>Team A Collective Pitch Occupancy</b>
+      </td>
+    </tr>
+  </table>
+</div>
 
 ---
 
-## 5. Evaluation Harness
+## 📊 Benchmark Results (SoccerNet Tracking-2023)
 
-All models are evaluated using the official SoccerNet MOT TrackEval harness ([`src/evaluation/run_trackeval.py`](src/evaluation/run_trackeval.py)) measuring:
-- **$\text{HOTA}$** (*Higher Order Tracking Accuracy*): Conventionally related to the geometric mean of detection and association accuracy ($\text{HOTA} \approx \sqrt{\text{DetA} \times \text{AssA}}$).
-- **$\text{AssA}$** (*Association Accuracy*): Temporal alignment of player trajectories.
-- **$\text{DetA}$** (*Detection Accuracy*): Spatial alignment of bounding boxes.
-- **$\text{IDF1}$**: Identity F1 score measuring global trajectory consistency.
-- **$\text{IDSW}$**: Total identity switches across the benchmark.
-- **$\text{Frag}$**: Trajectory fragmentations.
+### Official Champion Benchmark (`experiments/final/botsort_champion.yaml`)
+Evaluated across all **12 validation sequences (9,000 frames)** containing 148,000+ annotations:
 
----
+| Metric | Score | Industry Interpretation |
+| :--- | :---: | :--- |
+| **HOTA** | **60.618** | Higher Order Tracking Accuracy ($\approx \sqrt{\text{DetA} \times \text{AssA}}$) |
+| **DetA** | **70.489** | Detection Accuracy (high precision bounding box overlap) |
+| **AssA** | **52.204** | Association Accuracy (temporal consistency across occlusions) |
+| **IDF1** | **70.615** | Global Identity F1 score (**Peak across all evaluated configurations**) |
+| **MOTA** | **86.829** | Multi-Object Tracking Accuracy (**Peak across all configurations**) |
+| **IDSW** | **693** | Total Identity Switches (**-252 ID switches vs. baseline**) |
+| **CLR_Pr** | **96.81%** | Precision on detected players |
+| **CLR_Re** | **90.23%** | Recall on visible players |
 
-## 6. Systematic Experimentation & Progression
+### Systematic Parameter Progression (18 Evaluated Runs)
 
-18 systematic experiments were conducted across parameter sweeps on the 12 validation sequences:
+| Experiment | Configuration Detail | HOTA | AssA | IDF1 | IDSW | DetA | MOTA |
+| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Baseline** | `conf=0.20`, `sparseOptFlow`, `match=0.80` | 59.863 | 50.978 | 68.228 | 945 | 70.429 | 86.547 |
+| **Buffer Sweep** | `track_buffer = 15` | 59.765 | 50.864 | 68.199 | 930 | 70.356 | 86.459 |
+| **Buffer Sweep** | `track_buffer = 60` | 59.816 | 50.958 | 68.258 | 975 | 70.346 | 86.566 |
+| **Conf Sweep** | `conf = 0.15` | 59.763 | 50.890 | 68.038 | 936 | 70.316 | 86.366 |
+| **Conf Sweep** | `conf = 0.35` | 60.368 | 51.753 | 69.569 | 728 | 70.529 | 86.801 |
+| **GMC: None** | No camera compensation | 57.120 | 47.112 | 64.275 | 1099 | 69.432 | 85.382 |
+| **GMC: ECC** | Enhanced Correlation Coefficient | 58.769 | 49.245 | 66.854 | 978 | 70.278 | 86.344 |
+| **GMC: ORB** | ORB Feature Homography | 60.109 | 51.387 | 69.185 | 889 | 70.425 | 86.490 |
+| **Alternative** | `conf=0.35`, `ORB GMC`, `match=0.80` | **60.652** | **52.230** | 70.289 | 720 | **70.532** | 86.799 |
+| **Champion** | `conf=0.35`, `ORB GMC`, `match=0.85` | **60.618** | **52.204** | **70.615** | **693** | 70.489 | **86.829** |
+| **With ReID** | `conf=0.35`, `ORB GMC`, `with_reid=True` | 59.402 | 50.173 | 68.911 | 815 | 70.440 | 86.683 |
 
-| Experiment | Configuration | HOTA | AssA | IDF1 | IDSW | Frag | DetA | MOTA |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Baseline** | `conf=0.20`, `sparseOptFlow`, `match=0.80` | 59.863 | 50.978 | 68.228 | 945 | 1542 | 70.429 | 86.547 |
-| **Exp 4: Buffer** | `track_buffer = 15` | 59.765 | 50.864 | 68.199 | 930 | 1535 | 70.356 | 86.459 |
-| **Exp 4: Buffer** | `track_buffer = 60` | 59.816 | 50.958 | 68.258 | 975 | 1579 | 70.346 | 86.566 |
-| **Exp 5: Conf** | `conf = 0.15` | 59.763 | 50.890 | 68.038 | 936 | 1507 | 70.316 | 86.366 |
-| **Exp 5: Conf** | `conf = 0.30` | 59.924 | 51.147 | 68.864 | 881 | 1600 | 70.331 | 86.696 |
-| **Exp 5: Conf** | `conf = 0.35` | 60.368 | 51.753 | 69.569 | 728 | 1618 | 70.529 | 86.801 |
-| **Exp 6: GMC** | `gmc = none` (No GMC) | 57.120 | 47.112 | 64.275 | 1099 | 1520 | 69.432 | 85.382 |
-| **Exp 6: GMC** | `gmc = ecc` | 58.769 | 49.245 | 66.854 | 978 | 1510 | 70.278 | 86.344 |
-| **Exp 6: GMC** | `gmc = orb` | 60.109 | 51.387 | 69.185 | 889 | 1536 | 70.425 | 86.490 |
-| **Exp 7: Champion** | `conf=0.35 + ORB (match=0.80)` | **60.652** | **52.230** | 70.289 | 720 | 1585 | **70.532** | 86.799 |
-| **Exp 8: Match** | `conf=0.35 + ORB + match=0.75` | 60.094 | 51.326 | 69.135 | 811 | 1601 | 70.480 | 86.699 |
-| **Exp 8: Match** | `conf=0.35 + ORB + match=0.85` | **60.618** | **52.204** | **70.615** | **693** | 1605 | 70.489 | **86.829** |
-| **Exp 9: ReID** | `conf=0.35 + ORB + match=0.85 + ReID=True` | 59.402 | 50.173 | 68.911 | 815 | 1660 | 70.440 | 86.683 |
-
----
-
-## 7. Official Benchmark Results
-
-### Official Final Configuration (`experiments/final/botsort_champion.yaml`)
-- **Detector**: YOLOv8s @ `conf = 0.35`
-- **Tracker**: BoT-SORT, `GMC = ORB`, `match_thresh = 0.85`, `track_buffer = 30`, `with_reid = False`
-- **Official Scores**:
-  - **HOTA**: `60.618`
-  - **DetA**: `70.489`
-  - **AssA**: `52.204`
-  - **IDF1**: `70.615` *(Peak across all experiments)*
-  - **MOTA**: `86.829` *(Peak across all experiments)*
-  - **IDSW**: `693` *(-252 ID switches vs. baseline)*
-  - **Frag**: `1605`
-
-### HOTA-Oriented Alternative (`experiments/botsort_orb/botsort_conf35_orb.yaml`)
-- Same as final configuration with `match_thresh = 0.80`.
-- **HOTA**: `60.652` | **AssA**: `52.230` | **IDF1**: `70.289` | **IDSW**: `720` | **Frag**: `1585`.
+> [!NOTE]
+> **Why ReID degrades performance**: In football, teammates wear identical kits. Appearance embeddings map teammates to near-zero cosine distances, which actively triggers identity switches during scrums. Pure spatial-motion matching with ORB GMC achieves superior association.
 
 ---
 
-## 8. Real-World Video Stress-Test Evaluations
+## 🎯 Velocity Calibration: Before vs. After GMC
 
-The pipeline was evaluated across 5 full real-world match videos testing different failure modes:
+Demonstrating the necessity of Global Motion Compensation when extracting physical kinematics from broadcast footage (Penalty Box Sequence, Frame 1080):
 
-| Test Video | Stress Factor | Resolution & FPS | Duration | Active Tracks/Frame | Cuts | Cross-Cut Bleed | Occlusion Gaps Bridged | Mean Continuity |
-| :--- | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| `penalty_box_crowded.mp4` | Heavy scrums / box clustering | 1080p @ 25 FPS | 30.0s | 20.93 | 0 | 0.0% | 119 | 92.0% |
-| `camera_motion_counterattack.mp4` | Rapid pans / fast transitions | 1080p @ 25 FPS | 30.0s | 13.89 | 0 | 0.0% | 18 | 98.3% |
-| `liverpool_highlights.mp4` | Replays, cuts, close-ups | 720p @ 30 FPS | 140.5s | 14.64 | 10 | **0.0%** | 729 | 89.4% |
-| `barcelona_highlight.mp4` | Sidelines, substitutions, whip-pans | 720p @ 25 FPS | 179.6s | 11.16 | 25 | **0.0%** | 720 | 87.8% |
-| `highlight.mp4` | Continuous long tactical feed | 1080p @ 30 FPS | 121.1s | **23.19** | 0 | 0.0% | **1,253** | 84.2% |
-
-For each video, four standardized artifacts are automatically generated in `outputs/evaluation/videos/<video_name>/`:
-- `video_metrics.json`: Full scene dynamics, cut counts, occlusion volume, and continuity stats.
-- `tracking.csv`: Raw frame-by-frame detections, bounding box coordinates, and track IDs.
-- `annotated.mp4`: High-speed rendered visual output with bounding boxes, `#id` badges, foot ground-anchors, 25-frame trajectory trails, and a real-time HUD dashboard.
-- `track_statistics.csv`: Individual track duration, span, and confidence statistics.
+| Track ID | Player Role / Observed Action | Raw Speed (Static) | Compensated Speed (ORB GMC) | Physiological Status |
+| :---: | :--- | :---: | :---: | :--- |
+| **#581** | Referee (Walking slowly) | <del>39.5 km/h</del> | **5.9 km/h** | Natural walking pace |
+| **#586** | Outfield Defender (Strolling in box) | <del>38.9 km/h</del> | **6.7 km/h** | Natural walking pace |
+| **#579** | Midfielder (Jogging forward) | <del>27.2 km/h</del> | **7.2 km/h** | Repositioning jog |
+| **#585** | Defender (Shifting laterally) | <del>22.7 km/h</del> | **10.9 km/h** | Controlled jog |
+| **#635** | Goalkeeper (Shuffling on goal line) | <del>11.7 km/h</del> | **5.7 km/h** | Keeper footwork |
+| **#625** | Attacker (Tracking back) | <del>38.0 km/h</del> | **7.0 km/h** | Recovery jog |
 
 ---
 
-## 9. Repository Structure
+## 📁 Repository Structure
 
 ```
 football-player-tracking/
 │
-├── data/
-│   ├── raw/               # Raw SoccerNet tracking-2023 dataset
-│   ├── processed/         # Converted YOLO-format labels & images
-│   └── videos/            # Evaluation match clips (MP4)
+├── assets/                     # Visual showcase images & figures
+│   ├── tracking_box_demo.png
+│   ├── tracking_match_demo.png
+│   ├── dominance_map.png
+│   ├── team_a_heatmap.png
+│   └── team_b_heatmap.png
 │
-├── models/                # Model weights directory
+├── data/
+│   ├── raw/                    # SoccerNet tracking-2023 dataset
+│   ├── processed/              # Formatted YOLO training splits
+│   └── videos/                 # Evaluation match MP4s
+│
+├── models/                     # Fine-tuned YOLOv8 model weights
 │
 ├── src/
-│   ├── data/              # Conversion & dataset validation scripts
-│   ├── detection/         # YOLO inference & test scripts
-│   ├── tracking/          # BoT-SORT runners, evaluations, and renderers
-│   ├── evaluation/        # TrackEval harness, summaries, and comparisons
-│   └── visualization/     # Standalone video visualizer with HUD & trails
+│   ├── analytics/              # Phase 2 Football Intelligence
+│   │   ├── team_classifier.py      # Jersey CIELAB clustering & voting
+│   │   ├── kinematics.py           # Metric distance, speed, intensity zones
+│   │   ├── heatmaps.py             # 2D Gaussian KDE pitch maps
+│   │   ├── team_shape.py           # Centroids, convex hulls, formations
+│   │   ├── pitch_model.py          # FIFA 105m x 68m geometry
+│   │   ├── dynamic_pitch_mapper.py # Dynamic homography with ORB GMC
+│   │   ├── generate_dynamic_trajectories.py # Velocity calibration
+│   │   └── run_analytics.py        # End-to-end analytics CLI
+│   │
+│   ├── tracking/               # Tracking runners & evaluators
+│   │   ├── evaluate_video.py       # Single video evaluation
+│   │   └── evaluate_all_videos.py  # Batch multi-video evaluator
+│   │
+│   ├── evaluation/             # Official benchmark harness
+│   │   ├── run_trackeval.py        # TrackEval benchmark runner
+│   │   ├── compare_experiments.py  # Multi-experiment delta comparator
+│   │   └── summarize_results.py    # Metric summary generator
+│   │
+│   └── visualization/          # High-speed video rendering
+│       ├── render_tracking.py      # Clean broadcast renderer (120+ FPS)
+│       └── render_radar_view.py    # Dual-view tactical radar renderer
 │
-├── experiments/
-│   ├── baseline/          # Baseline BoT-SORT YAML (conf=0.20, sparseOptFlow)
-│   ├── botsort_orb/       # HOTA-oriented YAML (conf=0.35, ORB, match=0.80)
-│   └── final/             # Official champion YAML (conf=0.35, ORB, match=0.85)
+├── experiments/                # Reproducible YAML configurations
+│   ├── baseline/
+│   ├── botsort_orb/
+│   └── final/                  # Champion configuration
 │
-├── outputs/
-│   ├── tracking/          # Tracking prediction CSVs
-│   ├── evaluation/        # Benchmark CSVs, JSON records, and video dynamics
-│   └── videos/            # Rendered annotated MP4 videos
+├── tests/                      # Automated unit & integration tests
+│   ├── test_analytics.py       # Kinematics, heatmaps, team shape tests
+│   └── test_team_classifier.py # SoccerNet SNMOT-113 GT benchmark
 │
-├── docs/
-│   └── detection_vs_tracking.md  # Analytical decomposition (DetA vs AssA)
-│
-├── notebooks/             # Exploratory analysis notebooks
-├── requirements.txt       # Python package dependencies
-├── LICENSE                # MIT License
-└── README.md              # Project documentation
+├── requirements.txt            # Python dependencies
+├── LICENSE                     # MIT License
+└── README.md
 ```
 
 ---
 
-## 10. Quick Start & Reproducibility
+## ⚡ Quick Start & Usage
 
-### Installation
+### 1. Installation
 ```bash
 git clone https://github.com/DA-Shaurya/football-player-tracking.git
 cd football-player-tracking
 python -m venv .venv
-.venv\Scripts\activate      # Windows (or source .venv/bin/activate on Linux)
+# Windows:
+.venv\Scripts\activate
+# Linux/macOS:
+source .venv/bin/activate
+
 pip install -r requirements.txt
 ```
 
-### Run TrackEval Benchmark
-To reproduce official benchmark metrics on the SoccerNet validation set:
+### 2. Run Full Tactical Analytics Pipeline
+Execute end-to-end tracking analytics on any match video in a single command:
+```bash
+python src/analytics/run_analytics.py \
+  --video data/videos/liverpool_highlights.mp4 \
+  --tracking outputs/tracking/liverpool_tracking_champion.csv \
+  --name liverpool
+```
+This automatically produces:
+- `outputs/analytics/liverpool_analytics_summary.json` (Structured executive report)
+- `outputs/analytics/liverpool_player_kinematics.csv` (Distances, top speeds, sprint bouts)
+- `outputs/analytics/liverpool_team_shapes.csv` (Frame-by-frame convex hull & centroids)
+- `outputs/analytics/heatmaps/*.png` (Territorial dominance and team occupancy heatmaps)
+
+### 3. Render Clean Broadcast Video with Team Colors & Speeds
+Render full-screen 1080p tracking footage at **120+ FPS**:
+```bash
+python src/visualization/render_tracking.py \
+  --video data/videos/liverpool_highlights.mp4 \
+  --csv outputs/tracking/liverpool_tracking_compensated.csv \
+  --output outputs/videos/liverpool_tracked_clean.mp4 \
+  --title "Premier League: Liverpool FC Analytics"
+```
+
+### 4. Reproduce Benchmark Metrics
+Run TrackEval across the SoccerNet validation set:
 ```bash
 python src/evaluation/run_trackeval.py --experiment botsort_conf35_orb_match85
 ```
 
-### Compare Experiments Side-by-Side
+### 5. Run Automated Tests
 ```bash
-python src/evaluation/compare_experiments.py --baseline botsort --candidates botsort_conf35_orb botsort_conf35_orb_match85 botsort_conf35_orb_match85_reid
-```
-
-### Evaluate Any Real-World Video
-To generate the 4 standard artifacts (`tracking.csv`, `annotated.mp4`, `video_metrics.json`, `track_statistics.csv`) on any video:
-```bash
-python src/tracking/evaluate_video.py --video data/videos/liverpool_highlights.mp4
-```
-
-### Render Video Visualization with HUD & Trails
-```bash
-python src/visualization/render_tracking.py --video data/videos/highlight.mp4 --csv outputs/tracking/highlight_tracking_champion.csv --output outputs/videos/highlight_annotated.mp4 --title "Premier League Tactical Feed"
+python tests/test_analytics.py
+python tests/test_team_classifier.py
 ```
 
 ---
 
-## 11. Limitations & Future Work
+## 📜 Citation & Acknowledgements
 
-### Limitations
-1. **Prolonged Scrums**: Pure spatial matching can switch identities when two opposing players tussle and separate in swapped positions if occlusion exceeds 30 frames.
-2. **Camera Pans during Extreme Whip-Motion**: High-velocity panning causes motion blur, occasionally dropping confidence below 0.35 before ORB GMC re-acquires features.
-3. **Absence of Player Identity Across Scene Cuts**: By design, tracks cleanly terminate at camera cuts to prevent false associations, meaning cross-shot player re-identification requires higher-level visual understanding.
-
-### Future Work
-1. **Jersey Number Optical Character Recognition (OCR)**: Integrating an OCR sub-network on back crops to re-anchor player identity across camera cuts.
-2. **Team Jersey Color Clustering**: Unsupervised HSV/CIELAB color clustering to prevent teammate-vs-opponent false associations during scrums.
-3. **Pitch Coordinate Homography**: Projecting bounding box feet coordinates onto a static 2D bird's-eye pitch model for sports tactical analytics.
+This project builds upon:
+- **SoccerNet**: *A benchmark for action spotting, camera calibration, and multi-object tracking in association football* ([SoccerNet Tracking-2023](https://www.soccer-net.org/)).
+- **BoT-SORT**: *Robust Associations Multi-Pedestrian Tracker* (Aharon et al., 2022).
+- **YOLOv8**: *Ultralytics Real-Time Object Detection*.
 
 ---
 
-## License
+## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+This repository is distributed under the [MIT License](LICENSE).
