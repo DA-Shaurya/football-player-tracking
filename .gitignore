@@ -27,6 +27,8 @@ data/videos/
 outputs/detections/
 outputs/tracking/
 outputs/videos/
+outputs/analytics/trajectories/
+outputs/analytics/*.csv
 
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/

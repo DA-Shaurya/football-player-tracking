@@ -52,13 +52,24 @@ def render_radar_video(
         x_pitch = float(row["x_pitch"]) if "x_pitch" in row else None
         y_pitch = float(row["y_pitch"]) if "y_pitch" in row else None
 
+        team_id = int(row["team_id"]) if "team_id" in row and not pd.isna(row["team_id"]) else None
+        speed_kmh = float(row["speed_kmh"]) if "speed_kmh" in row and not pd.isna(row["speed_kmh"]) else 0.0
+
+        x1 = float(row["x1"]) if "x1" in row and not pd.isna(row["x1"]) else None
+        y1 = float(row["y1"]) if "y1" in row and not pd.isna(row["y1"]) else None
+        x2 = float(row["x2"]) if "x2" in row and not pd.isna(row["x2"]) else None
+        y2 = float(row["y2"]) if "y2" in row and not pd.isna(row["y2"]) else None
+
         frames_dict[int(row["frame"])].append({
             "id": int(row["track_id"]),
             "x_pixel": x_mid,
             "y_pixel": y_mid,
+            "bbox": (x1, y1, x2, y2) if x1 is not None else None,
             "x_pitch_static": x_pitch,
             "y_pitch_static": y_pitch,
-            "conf": float(row["confidence"])
+            "conf": float(row["confidence"]),
+            "team_id": team_id,
+            "speed_kmh": speed_kmh,
         })
 
     # 2. Open Video
@@ -131,11 +142,21 @@ def render_radar_video(
         is_tactical = (num_players >= min_tactical_players)
 
         if is_tactical:
-            # Project each active player
+            # Color palette per team
+            # Team 0: Red (Liverpool), Team 1: White/Cyan (Luton), Team 2+: Yellow (Ref/GK)
+            team_palette = {
+                0: (35, 35, 230),     # Team 0: Red (BGR)
+                1: (240, 200, 70),    # Team 1: Cyan / Gold / Sky-Blue (BGR)
+                2: (30, 235, 245),    # Referee: Vivid Yellow (BGR)
+            }
+            team_poly_pts = defaultdict(list)
             projected_players = []
+
             for det in active_dets:
                 tid = det["id"]
                 x_p, y_p = det["x_pixel"], det["y_pixel"]
+                team_id = det.get("team_id", None)
+                speed_kmh = det.get("speed_kmh", 0.0)
 
                 if use_dynamic_mapper:
                     x_pitch, y_pitch, in_bounds = dyn_mapper.project_player(tid, x_p, y_p)
@@ -154,12 +175,38 @@ def render_radar_video(
                 cy = max(3, min(pitch_h - 4, cy))
                 pitch_trajectories[tid].append((cx, cy))
 
+                if in_bounds and team_id in [0, 1]:
+                    team_poly_pts[team_id].append((cx, cy))
+
+                # Color selection: Team color if available, else track hash color
+                p_color = team_palette.get(team_id, get_color(tid)) if team_id is not None else get_color(tid)
+
                 projected_players.append({
                     "id": tid,
                     "cx": cx,
                     "cy": cy,
-                    "in_bounds": in_bounds
+                    "in_bounds": in_bounds,
+                    "team_id": team_id,
+                    "color": p_color,
+                    "speed_kmh": speed_kmh,
                 })
+
+            # Draw Team Convex Hulls (Tactical Shapes)
+            from scipy.spatial import ConvexHull, QhullError
+            overlay = pitch_frame.copy()
+            for tid_val, pts_arr in team_poly_pts.items():
+                if len(pts_arr) >= 3:
+                    pts_np = np.array(pts_arr, dtype=np.int32)
+                    try:
+                        hull = ConvexHull(pts_np)
+                        hull_pts = pts_np[hull.vertices]
+                        t_color = team_palette.get(tid_val, (200, 200, 200))
+                        cv2.fillPoly(overlay, [hull_pts], t_color)
+                        cv2.polylines(pitch_frame, [hull_pts], isClosed=True, color=t_color, thickness=2, lineType=cv2.LINE_AA)
+                    except QhullError:
+                        pass
+            # Blend translucent hull fill
+            cv2.addWeighted(overlay, 0.22, pitch_frame, 0.78, 0, pitch_frame)
 
             # Draw trajectory trails on 2D tactical board
             for tid, pts in list(pitch_trajectories.items()):
@@ -168,29 +215,55 @@ def render_radar_video(
                     if len(pts) == 0:
                         del pitch_trajectories[tid]
                         continue
-                color = get_color(tid)
+                t_det = next((p for p in projected_players if p["id"] == tid), None)
+                color = t_det["color"] if t_det else get_color(tid)
                 pts_list = list(pts)
                 for i in range(1, len(pts_list)):
                     alpha = i / len(pts_list)
                     th = max(1, int(round(1 + 2 * alpha)))
-                    cv2.line(pitch_frame, pts_list[i-1], pts_list[i], color, th)
+                    cv2.line(pitch_frame, pts_list[i-1], pts_list[i], color, th, lineType=cv2.LINE_AA)
 
             # Draw player badges on 2D tactical board
             for p in projected_players:
                 tid = p["id"]
                 cx, cy = p["cx"], p["cy"]
-                color = get_color(tid)
+                color = p["color"]
 
                 if p["in_bounds"]:
-                    cv2.circle(pitch_frame, (cx, cy), 9, color, -1)
-                    cv2.circle(pitch_frame, (cx, cy), 10, (255, 255, 255), 1)
-                    cv2.putText(pitch_frame, str(tid), (cx - 7, cy + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
+                    cv2.circle(pitch_frame, (cx, cy), 8, color, -1, lineType=cv2.LINE_AA)
+                    cv2.circle(pitch_frame, (cx, cy), 9, (255, 255, 255), 1, lineType=cv2.LINE_AA)
+                    cv2.putText(pitch_frame, str(tid), (cx - 6, cy + 3), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (255, 255, 255), 1, cv2.LINE_AA)
                 else:
-                    cv2.circle(pitch_frame, (cx, cy), 5, (160, 160, 160), -1)
+                    cv2.circle(pitch_frame, (cx, cy), 5, (140, 140, 140), -1, lineType=cv2.LINE_AA)
 
-            # Header on pitch canvas
-            cv2.putText(pitch_frame, "2D TACTICAL RADAR (105m x 68m)", (pad, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
-            cv2.putText(pitch_frame, f"Active Players: {len(projected_players)}", (pitch_w - 165, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+            # Tactical HUD Headers on pitch canvas
+            cv2.putText(pitch_frame, "2D TACTICAL BOARD (105m x 68m)", (pad, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.putText(pitch_frame, f"Players: {len(projected_players)}", (pitch_w - 120, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+
+            # Team Legend badges
+            cv2.circle(pitch_frame, (pad + 10, pitch_h - 12), 6, team_palette[0], -1)
+            cv2.putText(pitch_frame, "Team A", (pad + 22, pitch_h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (230, 230, 230), 1, cv2.LINE_AA)
+
+            cv2.circle(pitch_frame, (pad + 95, pitch_h - 12), 6, team_palette[1], -1)
+            cv2.putText(pitch_frame, "Team B", (pad + 107, pitch_h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (230, 230, 230), 1, cv2.LINE_AA)
+
+            cv2.circle(pitch_frame, (pad + 180, pitch_h - 12), 6, team_palette[2], -1)
+            cv2.putText(pitch_frame, "Ref/GK", (pad + 192, pitch_h - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (230, 230, 230), 1, cv2.LINE_AA)
+
+            # Draw tactical tracking overlay on match video frame
+            for det in active_dets:
+                tid = det["id"]
+                bbox = det.get("bbox")
+                team_id = det.get("team_id")
+                speed_kmh = det.get("speed_kmh", 0.0)
+                p_color = team_palette.get(team_id, get_color(tid)) if team_id is not None else get_color(tid)
+                if bbox is not None:
+                    bx1, by1, bx2, by2 = [int(round(v)) for v in bbox]
+                    cv2.rectangle(frame, (bx1, by1), (bx2, by2), p_color, 2)
+                    lbl = f"#{tid} | {speed_kmh:.1f}km/h" if speed_kmh > 0 else f"#{tid}"
+                    (lw, lh), _ = cv2.getTextSize(lbl, cv2.FONT_HERSHEY_SIMPLEX, 0.40, 1)
+                    cv2.rectangle(frame, (bx1, max(0, by1 - lh - 5)), (bx1 + lw + 4, by1), p_color, -1)
+                    cv2.putText(frame, lbl, (bx1 + 2, by1 - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.40, (255, 255, 255), 1, cv2.LINE_AA)
 
         else:
             # Replay / Close-up / Non-tactical Cutaway banner
